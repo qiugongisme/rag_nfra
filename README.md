@@ -53,3 +53,6 @@
 
 ## 项目延展
 - 项目详细介绍可参考[博客](https://blog.csdn.net/quf2zy/article/details/149504959?spm=1011.2415.3001.5331)
+
+## 许可证
+   本项目采用 **MIT 许可证**，详情见 [LICENSE](LICENSE) 文件。
