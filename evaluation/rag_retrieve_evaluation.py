@@ -1,14 +1,19 @@
 import csv
+import logging
 import os
 import re
 
 import numpy as np
 import pandas as pd
+from dotenv import load_dotenv
 from langchain.embeddings import CacheBackedEmbeddings
 from pymilvus import MilvusClient
 
 from config import config
-from src.utils import get_cached_embedder, MilvusUtils
+from src.retriever import MilvusRetriever, query_rewrite_retriever
+from src.utils import get_cached_embedder, MilvusUtils, get_qwen_model
+
+logger = logging.getLogger(__name__)
 
 
 def load_collection(collect_name: str) -> None:
@@ -69,12 +74,48 @@ def retrieve_query(question: str, embeddings: CacheBackedEmbeddings, client: Mil
             "query": question,
             "参考答案": "",  # 这里可以根据需要填充答案 dict.update(dict2)，把字典dict2的键/值对更新到dict里
             "参考来源": "",  # 这里可以根据需要填充来源
-            "text": re.sub(r'[\r\n]+', '；', hit['entity']['text']),
+            "text": re.sub(r'[\r\n]+', '', hit['entity']['text']),
             "distance": "%.4f" % hit['distance'] if hit['distance'] else "0.0000",
             "metadata": hit['entity']['metadata']['source'] if 'source' in hit['entity']['metadata'] else ""
         })
 
     return all_results
+
+
+def extract_txt_str(text) -> str:
+    """提取文本中第一个出现的"第X条"模式
+    Args:
+        text (str): 输入文本
+    Returns:
+        list: 包含第一个匹配内容的列表，如果没有匹配则返回空列表
+    """
+    # 正则表达式模式，用于匹配"第X条"
+    pattern = r"第\S*条"
+
+    # 输入验证
+    if text is None:
+        return []
+
+    if not isinstance(text, str):
+        text = str(text)
+
+    # 使用re.search函数查找第一个匹配的内容
+    try:
+        match = re.search(pattern, text)
+        return match.group() if match else ""
+    except re.error:
+        # 如果正则表达式执行出错，返回空列表
+        return ""
+
+
+def extract_txt_list(text) -> list:
+    # 正则表达式模式，用于匹配“第X条”
+    pattern = r"第(?:[一二三四五六七八九]?[千百十]?[百十]?[一二三四五六七八九]?|十)条"
+
+    # 使用re.findall函数查找所有匹配的内容
+    matches = re.findall(pattern, text)
+
+    return matches
 
 
 def write_results_to_csv(retrieve_result_list, csv_f):
@@ -85,16 +126,23 @@ def write_results_to_csv(retrieve_result_list, csv_f):
     with open(csv_f, "a", encoding="utf-8", newline="") as f:
         writer = csv.writer(f)
         if write_header:
-            writer.writerow(["查询问题", "参考答案", "参考来源", "文本块", "相似度", "元数据"])
+            # writer.writerow(["查询问题", "参考答案", "参考来源", "文本块", "相似度", "元数据"])
+            writer.writerow(["查询问题", "参考答案", "参考来源", "文本块", "相似度", "元数据", "召回说明"])
         for item in retrieve_result_list:
             writer.writerow(
-                [item["query"], item["参考答案"], item["参考来源"], item["text"], item["distance"], item["metadata"]])
+                # [item["query"], item["参考答案"], item["参考来源"], item["text"], item["distance"], item["metadata"]]
+                [item["query"], item["参考答案"], item["参考来源"], item["text"], item["distance"], item["metadata"],
+                 item["召回说明"]]
+            )
 
 
 def execute_retrieval():
-    print("获取 Excel 表格中表单1,2,3 的问题列表...")
-    input_data_path = "../evaluation/data/evaluationData.xlsx"
+    logging.info("获取 Excel 表格中表单1,2,3 的问题列表...")
+    # input_data_path = "../evaluation/data/retrieveInputData.xlsx"
+    # input_data_path = "../evaluation/data/retrieveInputData_V1_1.xlsx"
+    input_data_path = "../evaluation/data/retrieveInputData_V1_2.xlsx"
     sheet_list = [0, 1, 2]  # 需要读取的表单
+    # sheet_list = [1]  # 需要读取的表单
 
     # 读取 Excel 文件并处理数据
     dt_list = read_xlsx_and_process(input_data_path, sheet_list)
@@ -103,7 +151,7 @@ def execute_retrieval():
     output_csv_path_list = [
         "./retrieve_out/retrieve_output_WX.csv",
         "./retrieve_out/retrieve_output_TY.csv",
-        "./retrieve_out/retrieve_output_TXYB.csv",
+        "./retrieve_out/retrieve_output_YB.csv",
     ]
 
     collection_name = config.COLLECTION_NAME
@@ -115,29 +163,117 @@ def execute_retrieval():
 
     for i, dt in enumerate(dt_list):
         results = []
-        print("开始检索问题列表...")
+        logging.info("开始检索问题列表...")
         for key, values in dt.items():
-            # print(f"正在检索问题：{key}，请稍候...")
+            # logging.info(f"正在检索问题：{key}，请稍候...")
             res = retrieve_query(question=key, embeddings=embedding, client=client, collect_name=collection_name)
             for ddt in res:
-                ddt['参考答案'] = values[0]['答案'] if values else ""
-                ddt['参考来源'] = values[0]['来源'] if values else ""
-            results.append(res)
-            print(f"问题 '{key}' 的检索完成")
+                ref_source = values[0]['来源'] if values else ""
+                retri_txt = re.sub(r'[\r\n]+', '', ddt['text'])
 
-        print(f"表单 {i + 1} 的检索完成，写入结果到 CSV 文件...")
+                ref_source_num = extract_txt_str(ref_source)
+                retri_txt_nums = extract_txt_list(retri_txt)
+
+                ddt['参考答案'] = values[0]['答案'] if values else ""
+                ddt['参考来源'] = ref_source
+                ddt['召回说明'] = "TRUE" if len(retri_txt_nums) > 0 and ref_source_num in set(
+                    retri_txt_nums) else "FALSE"
+
+            results.append(res)
+            logging.info(f"问题 '{key}' 的检索完成")
+
+        logging.info(f"表单 {i + 1} 的检索完成，写入结果到 CSV 文件...")
         # 展开嵌套列表
         flat_results = [item for sublist in results for item in sublist]
         write_results_to_csv(flat_results, output_csv_path_list[i])
 
-        print(f"表单 {i + 1} 的结果已写入到 {output_csv_path_list[i]}")
+        logging.info(f"表单 {i + 1} 的结果已写入到 {output_csv_path_list[i]}")
 
     # 释放集合（从内存释放）
     client.release_collection(collection_name)
+
+
+def execute_rewrite_retrieval():
+    logging.info("execute_rewrite_retrieval, 获取 Excel 表格中表单1,2,3 的问题列表...")
+    # input_data_path = "../evaluation/data/retrieveInputData_V1_1.xlsx"
+    input_data_path = "../evaluation/data/retrieveInputData_V1_2.xlsx"
+    sheet_list = [0, 1, 2]  # 需要读取的表单
+    # sheet_list = [2]  # 需要读取的表单
+
+    # 读取 Excel 文件并处理数据
+    dt_list = read_xlsx_and_process(input_data_path, sheet_list)
+
+    # 输出的名称分别与上述读取的表单对应
+    output_csv_path_list = [
+        "./eval_out/retrieve_output_WX.csv",
+        "./eval_out/retrieve_output_TY.csv",
+        "./eval_out/retrieve_output_YB.csv",
+    ]
+
+    # 定义 milvus检索器
+    milvus_retriever = MilvusRetriever()
+
+    # 加载环境变量
+    load_dotenv()
+
+    # model_deepseek = get_deepseek_model(streaming=False)
+
+    model_qwen = get_qwen_model(streaming=False)
+
+    # 调用RePhraseQueryRetriever进行查询重写
+    re_retriever = query_rewrite_retriever(milvus_retriever, model_qwen)
+
+    # 调用 MultiQueryRetriever 进行查询分解
+    # multi_retiever = query_multi_retiever(milvus_retriever, model_deepseek)
+
+    for i, dt in enumerate(dt_list):
+        results = []
+        logging.info("开始检索问题列表...")
+        for key, values in dt.items():
+            res = re_retriever.invoke(key)
+
+            # res = multi_retiever.invoke(key)
+
+            # id_set = set(hits['id'] for hits in res)
+            # logging.info(f"multi_retiever 检索结果分块 id set -> : ", id_set)
+
+            #  RRF 对检索结果进行重排，取重排前三
+            # rrf_res = get_top_n_rrf(res)
+
+            for hit in res:
+                ref_source = values[0]['来源'] if values else ""
+                retri_txt = re.sub(r'[\r\n]+', '', hit['entity']['text'])
+
+                ref_source_num = extract_txt_str(ref_source)
+                retri_txt_nums = extract_txt_list(retri_txt)
+
+                results.append({
+                    "query": key,
+                    "参考答案": values[0]['答案'] if values else "",
+                    "参考来源": ref_source,
+                    "text": retri_txt,
+                    "distance": "%.4f" % hit['distance'] if hit['distance'] else "0.0000",
+                    "metadata": hit['entity']['metadata']['source'] if 'source' in hit['entity']['metadata'] else "",
+                    "召回说明": "TRUE" if len(retri_txt_nums) > 0 and ref_source_num in set(retri_txt_nums) else "FALSE"
+                })
+            logging.info(f"问题 '{key}' 的检索完成")
+
+        logging.info(f"表单 {i + 1} 的检索完成，写入结果到 CSV 文件...")
+
+        write_results_to_csv(results, output_csv_path_list[i])
+
+        logging.info(f"表单 {i + 1} 的结果已写入到 {output_csv_path_list[i]}")
 
 
 """
     这个文件是用于评估 RAG 检索效果的。
 """
 if __name__ == '__main__':
-    execute_retrieval()
+    # 配置日志
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+
+    # execute_retrieval()
+    execute_rewrite_retrieval()

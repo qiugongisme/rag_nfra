@@ -4,6 +4,7 @@ import markdown
 from bs4 import BeautifulSoup
 from langchain.embeddings import CacheBackedEmbeddings
 from langchain.storage import LocalFileStore
+from langchain_community.chat_models import ChatTongyi
 from langchain_core.callbacks import Callbacks
 from langchain_deepseek import ChatDeepSeek
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -90,6 +91,20 @@ def get_deepseek_model(
     return model
 
 
+def get_qwen_model(
+        model: str = "qwen-turbo-2025-07-15",
+        streaming: bool = True,
+        callbacks: Callbacks = None):
+    """获取通义千问模型实例
+    - model: 模型名称，默认为 "qwen-turbo-2025-07-15"
+    - streaming: 是否启用流式输出，默认为 True
+    - callbacks: 回调函数列表，默认为 None
+    """
+    model = ChatTongyi(model=model, streaming=streaming, callbacks=callbacks)
+
+    return model
+
+
 def markdown_to_text(md_text):
     """ 将 Markdown 文本转换为纯文本，并去除列表前缀和空行"""
 
@@ -105,10 +120,22 @@ def markdown_to_text(md_text):
 
     for line in lines:
         # 去除列表前缀：如 "- 内容"、"* **内容"
-        line = re.sub(r'^[\-\*\**\.]+\s*', '', line.strip())
+        line = re.sub(r'^[\-\*\.]+\s*', '', line.strip())
         cleaned_lines.append(line)
 
     # 4. 去除空行和合并段落（可选）
     cleaned_text = '\n'.join([line for line in cleaned_lines if line.strip()])
 
     return cleaned_text
+
+
+def unique_objects_by_id(objects):
+    seen_ids = set()
+    unique_objects = []
+
+    for obj in objects:
+        if obj.id not in seen_ids:
+            seen_ids.add(obj.id)
+            unique_objects.append(obj)
+
+    return unique_objects
