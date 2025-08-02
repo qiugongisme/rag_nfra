@@ -51,6 +51,16 @@
 8. 问答对话演示：
 ![core_flow](/project_source/run_result.png)
 
+
+## 项目版本更新
+### V1.1 update
+- 新增了一部分评估数据，现在一共有100个问答对了。同时，删除掉一些开放性的问答对
+- 新增了一些检索前处理方法，当前版本使用的检索处理方法为：query_rewrite_retriever，处理流程图如下：
+![core_flow](/project_source/RePhraseQueryRetriever_deal.png)
+- 新增了通义模型的使用方法 get_qwen_model，用于查询重写
+- 新增了查询重写后的评估方法：execute_rewrite_retrieval
+- 优化了 MilvusRetriever 类，使其适用于批量检索处理
+
 ## 项目延展
 - 项目详细介绍可参考[博客](https://blog.csdn.net/quf2zy/article/details/149504959?spm=1011.2415.3001.5331)
 
