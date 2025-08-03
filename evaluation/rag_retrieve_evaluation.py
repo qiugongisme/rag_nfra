@@ -1,7 +1,10 @@
 import csv
 import logging
 import os
+import random
 import re
+import time
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -10,6 +13,7 @@ from langchain.embeddings import CacheBackedEmbeddings
 from pymilvus import MilvusClient
 
 from config import config
+from src.chain import get_hyde_chain
 from src.retriever import MilvusRetriever, query_rewrite_retriever
 from src.utils import get_cached_embedder, MilvusUtils, get_qwen_model
 
@@ -53,6 +57,48 @@ def read_xlsx_and_process(file_path, sheets: list[int]) -> list:
         result.append(dict_var)
 
     return result
+
+
+def read_and_group_csvs(directory: str, batch_flag: str):
+    # 获取目录下所有 batch_flag 标识结尾的 .csv 文件
+    csv_files = [f for f in os.listdir(directory) if f.endswith(batch_flag + '.csv')]
+
+    # 按文件名的最后 last_n 个字符分组
+    last_n = 18 + len(batch_flag) + 1
+    grouped_files = {}
+    for file_name in csv_files:
+        key = file_name[-last_n:]
+        if key not in grouped_files:
+            grouped_files[key] = []
+        grouped_files[key].append(os.path.join(directory, file_name))
+
+    return grouped_files
+
+
+def read_csv_and_count(file_path) -> int:
+    set_count = set()
+    try:
+        df = pd.read_csv(file_path)
+
+        for row in df.itertuples():
+            if row[7] or row[7] == 'TRUE':
+                set_count.add(row[1])
+
+    except Exception as e:
+        logging.info(f"Error processing file {file_path}: {e}")
+
+    return len(set_count)
+
+
+def read_directory_csv_and_count(directory: str, batch_flag: str):
+    # 读取并分组CSV文件
+    grouped_files = read_and_group_csvs(directory=directory, batch_flag=batch_flag)
+
+    for key in grouped_files.keys():
+        key_sum = 0
+        for file_path in grouped_files[key]:
+            key_sum += read_csv_and_count(file_path)
+        logging.info(f"Group Key: {key} , total_tag: {key_sum}")
 
 
 def retrieve_query(question: str, embeddings: CacheBackedEmbeddings, client: MilvusClient, collect_name: str) -> list:
@@ -149,23 +195,33 @@ def execute_retrieval():
 
     # 输出的名称分别与上述读取的表单对应
     output_csv_path_list = [
-        "./retrieve_out/retrieve_output_WX.csv",
-        "./retrieve_out/retrieve_output_TY.csv",
-        "./retrieve_out/retrieve_output_YB.csv",
+        "./eval_out/retrieve_output_WX.csv",
+        "./eval_out/retrieve_output_TY.csv",
+        "./eval_out/retrieve_output_YB.csv",
     ]
 
     collection_name = config.COLLECTION_NAME
     load_collection(collection_name)
     # 连接到 Milvus 服务
     client = MilvusClient(host=config.MILVUS_HOST, port=config.MILVUS_PORT)
-    # 初始化嵌入模型
-    embedding = get_cached_embedder()
+
+    embedding = get_cached_embedder(local_cache_path="." + config.EMBEDDINGS_CACHE_PATH)
+
+    # 加载环境变量
+    load_dotenv()
 
     for i, dt in enumerate(dt_list):
         results = []
         logging.info("开始检索问题列表...")
         for key, values in dt.items():
             # logging.info(f"正在检索问题：{key}，请稍候...")
+
+            # HyDE 扩展 query
+            hyde_chain = get_hyde_chain()
+            hyde_query = hyde_chain.invoke(input=key)
+            logging.info(f"query: {key}")
+            logging.info(f"HyDE query: {hyde_query}")
+
             res = retrieve_query(question=key, embeddings=embedding, client=client, collect_name=collection_name)
             for ddt in res:
                 ref_source = values[0]['来源'] if values else ""
@@ -193,7 +249,7 @@ def execute_retrieval():
     client.release_collection(collection_name)
 
 
-def execute_rewrite_retrieval():
+def execute_rewrite_retrieval(output_fname_ctrl: str = None):
     logging.info("execute_rewrite_retrieval, 获取 Excel 表格中表单1,2,3 的问题列表...")
     # input_data_path = "../evaluation/data/retrieveInputData_V1_1.xlsx"
     input_data_path = "../evaluation/data/retrieveInputData_V1_2.xlsx"
@@ -205,9 +261,9 @@ def execute_rewrite_retrieval():
 
     # 输出的名称分别与上述读取的表单对应
     output_csv_path_list = [
-        "./eval_out/retrieve_output_WX.csv",
-        "./eval_out/retrieve_output_TY.csv",
-        "./eval_out/retrieve_output_YB.csv",
+        "./eval_out/batch/retrieve_output_WX.csv",
+        "./eval_out/batch/retrieve_output_TY.csv",
+        "./eval_out/batch/retrieve_output_YB.csv",
     ]
 
     # 定义 milvus检索器
@@ -221,6 +277,7 @@ def execute_rewrite_retrieval():
     model_qwen = get_qwen_model(streaming=False)
 
     # 调用RePhraseQueryRetriever进行查询重写
+    time.sleep(random.randint(30, 60))  # 随机等待30-60秒，避免请求频率被限制
     re_retriever = query_rewrite_retriever(milvus_retriever, model_qwen)
 
     # 调用 MultiQueryRetriever 进行查询分解
@@ -260,9 +317,30 @@ def execute_rewrite_retrieval():
 
         logging.info(f"表单 {i + 1} 的检索完成，写入结果到 CSV 文件...")
 
-        write_results_to_csv(results, output_csv_path_list[i])
+        output_f_name = output_csv_path_list[i]
+        if output_fname_ctrl:
+            output_f_name = output_f_name.replace(".csv", output_fname_ctrl + ".csv")
 
-        logging.info(f"表单 {i + 1} 的结果已写入到 {output_csv_path_list[i]}")
+        write_results_to_csv(results, output_f_name)
+
+        logging.info(f"表单 {i + 1} 的结果已写入到 {output_f_name}")
+
+
+def execute_rewrite_retrieval_batch(batch_num: int, eval_strategy_name: str):
+    total = 0
+    while total < batch_num:
+        execute_rewrite_retrieval(datetime.now().strftime('%Y%m%d%H%M%S') + "_" + eval_strategy_name)
+
+        total += 1
+
+        wait_time = random.randint(60, 120)
+        logging.info(f"第 {total} 次执行完成，等待 {wait_time} 秒...")
+        # 等待指定时间
+        time.sleep(wait_time)
+
+    # 统计结果 （要注意目录下的文件是否都是本批次统计的，使用：batch_eval_strategy_name，控制）
+    output_batch_path = "./eval_out/batch"
+    read_directory_csv_and_count(output_batch_path, eval_strategy_name)
 
 
 """
@@ -276,4 +354,8 @@ if __name__ == '__main__':
     )
 
     # execute_retrieval()
-    execute_rewrite_retrieval()
+
+    # execute_rewrite_retrieval()
+
+    # 根据实际情况赋值 eval_strategy_name
+    execute_rewrite_retrieval_batch(10, "rewriteTop3")

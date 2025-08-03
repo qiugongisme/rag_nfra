@@ -1,4 +1,6 @@
 import re
+import threading
+from typing import Dict, Optional
 
 import markdown
 from bs4 import BeautifulSoup
@@ -12,23 +14,68 @@ from pymilvus import connections, Collection, CollectionSchema, utility
 
 from config import config
 
+# 全局缓存和锁
+_embedder_cache: Dict[str, CacheBackedEmbeddings] = {}
+_cache_lock = threading.RLock()
 
-def get_cached_embedder() -> CacheBackedEmbeddings:
-    """获取缓存的嵌入模型实例"""
 
-    # 创建本地文件存储实例
-    fs = LocalFileStore(config.EMBEDDINGS_CACHE_PATH)
-    # 创建 HuggingFace 嵌入模型实例
-    underlying_embeddings = HuggingFaceEmbeddings(
-        model_name=config.EMBED_MODEL_NAME,  # 嵌入模型名称
-        model_kwargs={'device': config.EMBED_MODEL_KWARGS_PROCESSOR},  # 嵌入模型参数
-        encode_kwargs={'normalize_embeddings': config.IS_NORMALIZE_EMBEDDINGS},  # 是否归一化嵌入，BGE推荐使用
-    )
-    # 创建缓存嵌入模型实例
-    cached_embedder = CacheBackedEmbeddings.from_bytes_store(
-        underlying_embeddings, fs, namespace=underlying_embeddings.model_name
-    )
-    return cached_embedder
+def get_cached_embedder(
+        local_cache_path: Optional[str] = None,
+        force_reload: bool = False
+) -> CacheBackedEmbeddings:
+    """获取缓存的嵌入模型实例（带实例级缓存）
+    Args:
+        local_cache_path: 本地缓存路径，默认使用配置
+        force_reload: 是否强制重新加载模型
+    Returns:
+        CacheBackedEmbeddings: 缓存嵌入模型实例
+    """
+    # 处理默认参数
+    if local_cache_path is None:
+        local_cache_path = config.EMBEDDINGS_CACHE_PATH
+
+    # 缓存键
+    cache_key = local_cache_path
+
+    # 检查缓存（双重检查锁定模式）
+    if not force_reload:
+        with _cache_lock:
+            if cache_key in _embedder_cache:
+                return _embedder_cache[cache_key]
+
+    try:
+        # 创建本地文件存储实例
+        fs = LocalFileStore(local_cache_path)
+
+        # 创建 HuggingFace 嵌入模型实例
+        underlying_embeddings = HuggingFaceEmbeddings(
+            model_name=config.EMBED_MODEL_NAME,
+            model_kwargs={'device': config.EMBED_MODEL_KWARGS_PROCESSOR},
+            encode_kwargs={'normalize_embeddings': config.IS_NORMALIZE_EMBEDDINGS},
+        )
+
+        # 创建缓存嵌入模型实例
+        cached_embedder = CacheBackedEmbeddings.from_bytes_store(
+            underlying_embeddings,
+            fs,
+            namespace=underlying_embeddings.model_name
+        )
+
+        # 缓存实例
+        with _cache_lock:
+            _embedder_cache[cache_key] = cached_embedder
+
+        return cached_embedder
+
+    except Exception as e:
+        raise RuntimeError(f"Failed to create cached embedder: {str(e)}") from e
+
+
+def clear_embedder_cache():
+    """清理嵌入模型缓存"""
+    global _embedder_cache
+    with _cache_lock:
+        _embedder_cache.clear()
 
 
 # Milvus 数据库工具类

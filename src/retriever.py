@@ -27,14 +27,14 @@ class MilvusRetriever(BaseRetriever):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.milvus_client = MilvusUtils()
-        self.embedder = get_cached_embedder()
+        self.embedder = get_cached_embedder("." + config.EMBEDDINGS_CACHE_PATH)
         self.collection = self.milvus_client.get_collection(config.COLLECTION_NAME)
         if not self.milvus_client.is_collection_loaded(collection_name=config.COLLECTION_NAME):
             self.collection.load()
 
     def _search_single_query(self, qry: str) -> List[Hits]:
         try:
-            # logger.info("query embedding vector execute. query is : \n %s", qry)
+            logger.info("embedding and query vector execute. query is -> %s", qry)
             query_vector = self.embedder.embed_query(qry)
             query_vector = np.array([query_vector], dtype=np.float32).tolist()
 

@@ -36,7 +36,8 @@ class Config:
 
     # 检索参数
     NPROBE = 10 # nprobe 是查询时的聚类数目，通常设置为 nlist 的 1/10 到 1/5
-    TOP_K = 2 # 检索时返回的最相似向量数量
+    # TOP_K = 2 # 检索时返回的最相似向量数量
+    TOP_K = 3 # 检索时返回的最相似向量数量
 
 
 config = Config()
