@@ -140,14 +140,16 @@ def get_deepseek_model(
 
 def get_qwen_model(
         model: str = "qwen-turbo-2025-07-15",
+        api_key: str = None,
         streaming: bool = True,
         callbacks: Callbacks = None):
     """获取通义千问模型实例
     - model: 模型名称，默认为 "qwen-turbo-2025-07-15"
+    - api_key: 调用模型的 api_key
     - streaming: 是否启用流式输出，默认为 True
     - callbacks: 回调函数列表，默认为 None
     """
-    model = ChatTongyi(model=model, streaming=streaming, callbacks=callbacks)
+    model = ChatTongyi(model=model, api_key=api_key, streaming=streaming, callbacks=callbacks)
 
     return model
 

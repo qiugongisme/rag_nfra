@@ -274,9 +274,9 @@ def execute_rewrite_retrieval(output_fname_ctrl: str = None):
 
     # model_deepseek = get_deepseek_model(streaming=False)
 
-    model_qwen = get_qwen_model(streaming=False)
+    model_qwen = get_qwen_model(streaming=False, api_key=os.getenv("DASHSCOPE_API_KEY"))
 
-    # 调用RePhraseQueryRetriever进行查询重写
+    # 调用RePhraseQueryRetriever进行查询重写，并获取检索结果
     time.sleep(random.randint(30, 60))  # 随机等待30-60秒，避免请求频率被限制
     re_retriever = query_rewrite_retriever(milvus_retriever, model_qwen)
 
@@ -353,9 +353,9 @@ if __name__ == '__main__':
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
 
-    # execute_retrieval()
+    execute_retrieval()
 
     # execute_rewrite_retrieval()
 
     # 根据实际情况赋值 eval_strategy_name
-    execute_rewrite_retrieval_batch(10, "rewriteTop3")
+    # execute_rewrite_retrieval_batch(10, "rewriteTop3")

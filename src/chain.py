@@ -1,14 +1,15 @@
+import os
 from operator import itemgetter
 
 from langchain.callbacks import AsyncIteratorCallbackHandler
 from langchain.chains.base import Chain
 from langchain.output_parsers import BooleanOutputParser
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnableMap
+from langchain_core.runnables import RunnableMap, RunnableLambda
 
-from src.prompt import CHECK_NFRA_PROMPT, QUERY_PROMPT
-from src.retriever import MilvusRetriever, retrieved_deal
-from src.utils import get_deepseek_model
+from src.prompt import CHECK_NFRA_PROMPT, QUERY_PROMPT, HYDE_QUERY_PROMPT
+from src.retriever import MilvusRetriever, retrieved_deal, query_rewrite_retriever
+from src.utils import get_deepseek_model, get_qwen_model
 
 
 def get_check_chain() -> Chain:
@@ -31,27 +32,37 @@ def get_qa_chain(out_callback: AsyncIteratorCallbackHandler) -> Chain:
 
     # 定义 milvus检索器
     milvus_retriever = MilvusRetriever()
+
+    model_qwen = get_qwen_model(streaming=False, api_key=os.getenv("DASHSCOPE_API_KEY"))
+
+    # 调用RePhraseQueryRetriever进行查询重写，并获取检索结果
+    re_retriever = query_rewrite_retriever(milvus_retriever, model_qwen)
+
+    def sync_retrieve(query):
+        return re_retriever.invoke(query)
+
     chain = (
             RunnableMap({
-                "retrieve_docs": itemgetter("question") | milvus_retriever, # 从问题中检索相关文档
-                "question": lambda x: x["question"] # 获取问题
+                # "retrieve_docs": itemgetter("question") | milvus_retriever, # 从问题中检索相关文档
+                "retrieve_docs": itemgetter("question") | RunnableLambda(sync_retrieve),
+                "question": lambda x: x["question"]  # 获取问题
             }) |
             RunnableMap({
-                "retrieve_context": lambda x: retrieved_deal(x["retrieve_docs"]), # 处理检索到的文档
+                "retrieve_context": lambda x: retrieved_deal(x["retrieve_docs"]),  # 处理检索到的文档
                 # "retrieve_context": lambda x: retrieved_deal_eval(x["retrieve_docs"]), # 处理检索到的文档（进行 LLM 评估时使用）
-                "question": lambda x: x["question"] # 获取问题，继续传递
+                "question": lambda x: x["question"]  # 获取问题，继续传递
             }) |
             RunnableMap({
-                "retrieve_context": lambda x: x["retrieve_context"], # 获取检索到的上下文
+                "retrieve_context": lambda x: x["retrieve_context"],  # 获取检索到的上下文
                 # "retrieve_context": lambda x: x["retrieve_context"][0], # 获取检索到的上下文（进行 LLM 评估时使用）
                 # "similarity": lambda x: x["retrieve_context"][1], # 获取相似度 evaluation （进行 LLM 评估时使用）
-                "prompt": QUERY_PROMPT # 构建查询提示
+                "prompt": QUERY_PROMPT  # 构建查询提示
             }) |
             RunnableMap({
                 "retrieve_context": lambda x: x["retrieve_context"],  # 获取检索到的上下文
                 # "similarity": lambda x: x["similarity"],  # 获取相似度  evaluation （进行 LLM 评估时使用）
                 # 使用模型（默认使用 deepseek-chat）生成答案
-                    "answer": itemgetter("prompt") | get_deepseek_model(callbacks=callbacks) | StrOutputParser()
+                "answer": itemgetter("prompt") | get_deepseek_model(callbacks=callbacks) | StrOutputParser()
             })
     )
 
