@@ -61,6 +61,11 @@
 - 新增了查询重写后的评估方法：execute_rewrite_retrieval
 - 优化了 MilvusRetriever 类，使其适用于批量检索处理
 
+### V1.1.1 update
+- 新增 HyDE 实现查询扩展: src.chain.get_hyde_chain
+![core_flow](/project_source/hyde_way.png)
+- 新增 HyDE 对应的评估方法：evaluation.rag_retrieve_evaluation.execute_retrieval_batch
+
 ## 项目延展
 - 项目详细介绍可参考[博客](https://blog.csdn.net/quf2zy/article/details/149504959?spm=1011.2415.3001.5331)
 
