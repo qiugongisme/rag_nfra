@@ -30,21 +30,29 @@ def get_qa_chain(out_callback: AsyncIteratorCallbackHandler) -> Chain:
 
     callbacks = [out_callback] if out_callback else []
 
+    # 定义 Hyde 查询扩展链
+    hyde_chain = get_hyde_chain()
+
     # 定义 milvus检索器
     milvus_retriever = MilvusRetriever()
 
-    model_qwen = get_qwen_model(streaming=False, api_key=os.getenv("DASHSCOPE_API_KEY"))
+    # 获取qwen模型，默认使用 qwen-plus-2025-01-25 模型
+    # model_qwen = get_qwen_model(streaming=False, api_key=os.getenv("DASHSCOPE_API_KEY"))
 
     # 调用RePhraseQueryRetriever进行查询重写，并获取检索结果
-    re_retriever = query_rewrite_retriever(milvus_retriever, model_qwen)
+    # re_retriever = query_rewrite_retriever(milvus_retriever, model_qwen)
 
-    def sync_retrieve(query):
-        return re_retriever.invoke(query)
+    # def sync_retrieve(query):
+    #     return re_retriever.invoke(query)
 
     chain = (
             RunnableMap({
-                # "retrieve_docs": itemgetter("question") | milvus_retriever, # 从问题中检索相关文档
-                "retrieve_docs": itemgetter("question") | RunnableLambda(sync_retrieve),
+                "question_hyde": itemgetter("question") | hyde_chain,
+                "question": lambda x: x["question"]  # 获取问题
+            }) |
+            RunnableMap({
+                "retrieve_docs": itemgetter("question_hyde") | milvus_retriever, # 从问题中检索相关文档
+                # "retrieve_docs": itemgetter("question") | RunnableLambda(sync_retrieve),
                 "question": lambda x: x["question"]  # 获取问题
             }) |
             RunnableMap({
@@ -67,3 +75,15 @@ def get_qa_chain(out_callback: AsyncIteratorCallbackHandler) -> Chain:
     )
 
     return chain
+
+
+def get_hyde_chain():
+    # model = get_qwen_model(model="qwen-plus-2025-01-25", streaming=False)
+
+    model = get_qwen_model(model="qwen3-4b", streaming=False, model_kwargs={"enable_thinking": False})
+
+    # model = get_qwen_model(model="qwen3-30b-a3b-instruct-2507", streaming=False)
+
+    hyde_chain = HYDE_QUERY_PROMPT | model | StrOutputParser()
+
+    return hyde_chain

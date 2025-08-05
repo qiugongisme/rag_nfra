@@ -8,6 +8,7 @@ from datetime import datetime
 
 import numpy as np
 import pandas as pd
+import pymilvus
 from dotenv import load_dotenv
 from langchain.embeddings import CacheBackedEmbeddings
 from pymilvus import MilvusClient
@@ -173,16 +174,19 @@ def write_results_to_csv(retrieve_result_list, csv_f):
         writer = csv.writer(f)
         if write_header:
             # writer.writerow(["查询问题", "参考答案", "参考来源", "文本块", "相似度", "元数据"])
-            writer.writerow(["查询问题", "参考答案", "参考来源", "文本块", "相似度", "元数据", "召回说明"])
+            # writer.writerow(["查询问题", "参考答案", "参考来源", "文本块", "相似度", "元数据", "召回说明"])
+            writer.writerow(
+                ["查询问题", "参考答案", "参考来源", "文本块", "相似度", "元数据", "召回说明", "HyDE后新问题"])
         for item in retrieve_result_list:
             writer.writerow(
                 # [item["query"], item["参考答案"], item["参考来源"], item["text"], item["distance"], item["metadata"]]
                 [item["query"], item["参考答案"], item["参考来源"], item["text"], item["distance"], item["metadata"],
-                 item["召回说明"]]
+                 item["召回说明"], item["HyDE后新问题"]]
             )
 
 
-def execute_retrieval():
+def execute_retrieval(embedding: CacheBackedEmbeddings, client: MilvusClient, collection_name: str,
+                      output_fname_ctrl: str = None):
     logging.info("获取 Excel 表格中表单1,2,3 的问题列表...")
     # input_data_path = "../evaluation/data/retrieveInputData.xlsx"
     # input_data_path = "../evaluation/data/retrieveInputData_V1_1.xlsx"
@@ -195,17 +199,20 @@ def execute_retrieval():
 
     # 输出的名称分别与上述读取的表单对应
     output_csv_path_list = [
-        "./eval_out/retrieve_output_WX.csv",
-        "./eval_out/retrieve_output_TY.csv",
-        "./eval_out/retrieve_output_YB.csv",
+        # "./eval_out/retrieve_output_WX.csv",
+        # "./eval_out/retrieve_output_TY.csv",
+        # "./eval_out/retrieve_output_YB.csv",
+        "./eval_out/batch/retrieve_output_WX.csv",
+        "./eval_out/batch/retrieve_output_TY.csv",
+        "./eval_out/batch/retrieve_output_YB.csv",
     ]
 
-    collection_name = config.COLLECTION_NAME
-    load_collection(collection_name)
-    # 连接到 Milvus 服务
-    client = MilvusClient(host=config.MILVUS_HOST, port=config.MILVUS_PORT)
-
-    embedding = get_cached_embedder(local_cache_path="." + config.EMBEDDINGS_CACHE_PATH)
+    # collection_name = config.COLLECTION_NAME
+    # load_collection(collection_name)
+    # # 连接到 Milvus 服务
+    # client = MilvusClient(host=config.MILVUS_HOST, port=config.MILVUS_PORT)
+    #
+    # embedding = get_cached_embedder(local_cache_path="." + config.EMBEDDINGS_CACHE_PATH)
 
     # 加载环境变量
     load_dotenv()
@@ -219,10 +226,11 @@ def execute_retrieval():
             # HyDE 扩展 query
             hyde_chain = get_hyde_chain()
             hyde_query = hyde_chain.invoke(input=key)
-            logging.info(f"query: {key}")
-            logging.info(f"HyDE query: {hyde_query}")
+            # logging.info(f"query: {key}")
+            # logging.info(f"HyDE query: {hyde_query}")
 
-            res = retrieve_query(question=key, embeddings=embedding, client=client, collect_name=collection_name)
+            res = retrieve_query(question=hyde_query, embeddings=embedding, client=client, collect_name=collection_name)
+
             for ddt in res:
                 ref_source = values[0]['来源'] if values else ""
                 retri_txt = re.sub(r'[\r\n]+', '', ddt['text'])
@@ -235,18 +243,26 @@ def execute_retrieval():
                 ddt['召回说明'] = "TRUE" if len(retri_txt_nums) > 0 and ref_source_num in set(
                     retri_txt_nums) else "FALSE"
 
+                ddt['HyDE后新问题'] = hyde_query
+                ddt['query'] = key  # 在调用检索时，query 已被赋值为 HyDE之后的了，因此这里需要在写到CSV文件前覆盖回来
+
             results.append(res)
             logging.info(f"问题 '{key}' 的检索完成")
 
         logging.info(f"表单 {i + 1} 的检索完成，写入结果到 CSV 文件...")
         # 展开嵌套列表
         flat_results = [item for sublist in results for item in sublist]
-        write_results_to_csv(flat_results, output_csv_path_list[i])
 
-        logging.info(f"表单 {i + 1} 的结果已写入到 {output_csv_path_list[i]}")
+        output_f_name = output_csv_path_list[i]
+        if output_fname_ctrl:
+            output_f_name = output_f_name.replace(".csv", output_fname_ctrl + ".csv")
+
+        write_results_to_csv(flat_results, output_f_name)
+
+        logging.info(f"表单 {i + 1} 的结果已写入到 {output_f_name}")
 
     # 释放集合（从内存释放）
-    client.release_collection(collection_name)
+    # client.release_collection(collection_name)
 
 
 def execute_rewrite_retrieval(output_fname_ctrl: str = None):
@@ -333,10 +349,64 @@ def execute_rewrite_retrieval_batch(batch_num: int, eval_strategy_name: str):
 
         total += 1
 
-        wait_time = random.randint(60, 120)
+        wait_time = random.randint(30, 60)
         logging.info(f"第 {total} 次执行完成，等待 {wait_time} 秒...")
         # 等待指定时间
         time.sleep(wait_time)
+
+    # 统计结果 （要注意目录下的文件是否都是本批次统计的，使用：batch_eval_strategy_name，控制）
+    output_batch_path = "./eval_out/batch"
+    read_directory_csv_and_count(output_batch_path, eval_strategy_name)
+
+
+def execute_retrieval_batch(batch_num: int, eval_strategy_name: str):
+    client = MilvusClient(host=config.MILVUS_HOST, port=config.MILVUS_PORT)
+
+    collection_name = config.COLLECTION_NAME
+    if client.get_load_state(collection_name)["state"] != 3:
+        client.load_collection(collection_name)
+
+    # 等待集合加载完成
+    while True:
+        try:
+            if client.get_load_state(collection_name)["state"] == 3:
+                break
+        except Exception as e:
+            logger.warning(f"检查集合加载状态时出错: {e}")
+        logger.info("等待集合加载完成...")
+        time.sleep(5)
+
+    embedding = get_cached_embedder(local_cache_path="." + config.EMBEDDINGS_CACHE_PATH)
+
+    i = 0
+    while i < batch_num:
+
+        # 在每次执行前检查集合状态
+        try:
+            # 执行检索
+            execute_retrieval(
+                embedding=embedding,
+                client=client,
+                collection_name=collection_name,
+                output_fname_ctrl=datetime.now().strftime('%Y%m%d%H%M%S') + "_" + eval_strategy_name
+            )
+        except pymilvus.exceptions.MilvusException as e:
+            if "collection not loaded" in str(e):
+                logger.warning("检测到集合未加载，重新加载...")
+                client.load_collection(collection_name)
+                time.sleep(10)  # 等待重新加载
+                continue  # 重试当前批次
+            else:
+                raise e  # 其他异常直接抛出
+
+        i += 1
+
+        wait_time = random.randint(30, 60)
+        logging.info(f"第 {i} 次执行完成，等待 {wait_time} 秒...")
+        # 等待指定时间
+        time.sleep(wait_time)
+
+    client.release_collection(collection_name)
 
     # 统计结果 （要注意目录下的文件是否都是本批次统计的，使用：batch_eval_strategy_name，控制）
     output_batch_path = "./eval_out/batch"
@@ -353,9 +423,9 @@ if __name__ == '__main__':
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
 
-    execute_retrieval()
+    # execute_retrieval()
 
     # execute_rewrite_retrieval()
 
     # 根据实际情况赋值 eval_strategy_name
-    # execute_rewrite_retrieval_batch(10, "rewriteTop3")
+    execute_retrieval_batch(10, "HyDETop3_20")

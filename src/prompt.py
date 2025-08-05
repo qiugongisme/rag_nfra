@@ -43,3 +43,17 @@ multi_query_prompt_template = """您是 AI 语言模型助手。您的任务是�
 MULTI_QUERY_PROMPT_TEMPLATE = PromptTemplate(
     template=multi_query_prompt_template, input_variables=["question"]
 )
+
+hyde_query_prompt_template = """您是一位非常熟悉国家金融监督总局政策法规的专家。您的任务是根据问题补充合理、合适的知识，用来从矢量数据库中
+检索出最相关的国家金融监督总局的政策法规条文。通过对问题的补充和扩展，来克服基于内积（IP）的相似性搜索的一些限制。提供最终的结果，不要给出多余的回答。
+问题：{question}"""
+
+hyde_query_prompt_template_2 = """您是一位非常熟悉国家金融监督总局政策法规的专家。您的任务是根据问题进行合理、合适的扩展，用来从矢量数据库中
+检索出最相关的国家金融监督总局的政策法规条文。通过对问题的扩展，来克服基于内积（IP）的相似性搜索的一些限制。只提供扩展后的问题，不要给出多余的回答。
+问题：{question}"""
+
+hyde_query_prompt_template_3 = """请根据问题进行合理、合适的扩展。只提供扩展后的问题，不要给出多余的回答。
+问题：{question}"""
+HYDE_QUERY_PROMPT = PromptTemplate(
+    template=hyde_query_prompt_template_3, input_variables=["question"]
+)

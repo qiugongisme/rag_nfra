@@ -6,7 +6,9 @@ class Config:
 
     # 分块
     FILE_CHUNK_SIZE = 500
+    # FILE_CHUNK_SIZE = 300
     FILE_CHUNK_OVERLAP = 100  # 通常设为 chunk_size 的10-25%
+    # FILE_CHUNK_OVERLAP = 75  # 通常设为 chunk_size 的10-25%
 
     # 嵌入模型
     EMBEDDINGS_CACHE_PATH = "./.cache/embeddings"
@@ -21,6 +23,13 @@ class Config:
     MILVUS_PORT = 19530
 
     COLLECTION_NAME = "RAG_PART_NFRA"
+    """
+        分块大小为 300，重叠大小为 75
+        
+        依据评估数据集：evaluation/data/retrieveInputData_V1_2.xlsx，评估结果来看召回率比分块大小：500，重叠大小：100 差点
+    """
+    # COLLECTION_NAME = "RAG_PART_NFRA_375"
+
     # 索引配置
     INDEX_TYPE = "IVF_FLAT" # 使用 IVF_FLAT（倒排文件索引 + 精确搜索）
     METRIC_TYPE = "IP" # 使用内积作为相似度计算方式
