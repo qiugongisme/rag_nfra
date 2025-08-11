@@ -66,6 +66,15 @@
 ![core_flow](/project_source/hyde_way.png)
 - 新增 HyDE 对应的评估方法：evaluation.rag_retrieve_evaluation.execute_retrieval_batch
 
+### V1.2 update
+- 新增了 load_data_milvus_hybrid() ，用于实现混合检索
+- 新增了 milvus_hybrid_retrieve() 混合检索方法
+- 修改了类 MilvusRetriever，添加了混合检索方法，默认使用混合检索
+- 修改了 get_qa_chain()，使用混合检索
+
+**V1.2 更新后的问答流程图：（红色字体部分为主要更新内容）**
+![core_flow](/project_source/qa_V1_2.png)
+
 ## 项目延展
 - 项目详细介绍可参考[博客](https://blog.csdn.net/quf2zy/article/details/149504959?spm=1011.2415.3001.5331)
 
