@@ -6,31 +6,43 @@ import numpy as np
 from langchain.embeddings import CacheBackedEmbeddings
 from langchain.retrievers import RePhraseQueryRetriever, MultiQueryRetriever
 from langchain_core.callbacks import CallbackManagerForRetrieverRun
+from langchain_core.language_models import BaseLLM
 from langchain_core.output_parsers import BaseOutputParser
 from langchain_core.retrievers import BaseRetriever
+from milvus_model.hybrid import BGEM3EmbeddingFunction
 from pydantic.v1 import BaseModel
-from pymilvus import Hits, Collection
+from pymilvus import Hits, Collection, WeightedRanker, RRFRanker, AnnSearchRequest
 
 from config import config
 from src.prompt import RE_QUERY_PROMPT_TEMPLATE, MULTI_QUERY_PROMPT_TEMPLATE
 from src.utils import get_cached_embedder, MilvusUtils, unique_objects_by_id
 
-logger = logging.getLogger(__name__)
+import warnings
 
+warnings.filterwarnings("ignore", message=".*XLMRobertaTokenizerFast tokenizer.*")
+
+logger = logging.getLogger(__name__)
 
 class MilvusRetriever(BaseRetriever):
     # 声明字段并添加类型注解以避免 Pydantic 报错
     milvus_client: Optional[MilvusUtils] = None
     embedder: Optional[CacheBackedEmbeddings] = None
     collection: Optional[Collection] = None
+    search_type: Optional[str] = None
+    bgem3_ef: Optional[BGEM3EmbeddingFunction] = None
 
-    def __init__(self, **kwargs):
+    def __init__(self, search_type: str = config.MILVUS_RETRIEVER_SEARCH_TYPE, **kwargs):
         super().__init__(**kwargs)
         self.milvus_client = MilvusUtils()
-        self.embedder = get_cached_embedder("." + config.EMBEDDINGS_CACHE_PATH)
         self.collection = self.milvus_client.get_collection(config.COLLECTION_NAME)
         if not self.milvus_client.is_collection_loaded(collection_name=config.COLLECTION_NAME):
             self.collection.load()
+        self.search_type = search_type  # 默认使用 hybrid 搜索，由 config.py 中 MILVUS_RETRIEVER_SEARCH_TYPE 配置
+
+        if search_type == "hybrid":
+            self.bgem3_ef = BGEM3EmbeddingFunction(use_fp16=config.BGEM3_USE_FP16, device=config.BGEM3_DEVICE)
+        else:
+            self.embedder = get_cached_embedder("." + config.EMBEDDINGS_CACHE_PATH)
 
     def _search_single_query(self, qry: str) -> List[Hits]:
         try:
@@ -61,13 +73,16 @@ class MilvusRetriever(BaseRetriever):
         :param run_manager: 用于检索的回调管理器
         :return: 检索到的 Hits 集合
         """
-        query_list = [q for q in query.split("\n") if q.strip()]
-        result_list = [self._search_single_query(qry) for qry in query_list]
+        if self.search_type == "hybrid":
+            return milvus_hybrid_retrieve(collection=self.collection, bgem3_ef=self.bgem3_ef, query=query)
+        else:
+            query_list = [q for q in query.split("\n") if q.strip()]
+            result_list = [self._search_single_query(qry) for qry in query_list]
 
-        flat_list = list(itertools.chain.from_iterable(result_list))
+            flat_list = list(itertools.chain.from_iterable(result_list))
 
-        # 根据 hits 的 id 过滤重复的
-        return unique_objects_by_id(flat_list)
+            # 根据 hits 的 id 过滤重复的
+            return unique_objects_by_id(flat_list)
 
 
 def retrieved_deal(hits: list[Hits]) -> str:
@@ -126,7 +141,7 @@ def retrieved_deal_eval(hits: list[Hits]) -> tuple:
     return retrieved_context, similarity_str
 
 
-def query_rewrite_retriever(retriever: BaseRetriever, model: BaseModel) -> BaseRetriever:
+def query_rewrite_retriever(retriever: BaseRetriever, model: BaseLLM) -> BaseRetriever:
     retriever_from_llm = RePhraseQueryRetriever.from_llm(
         retriever=retriever,
         llm=model,
@@ -152,3 +167,87 @@ def query_multi_retiever(retriever: BaseRetriever, model: BaseModel) -> BaseRetr
     )
 
     return retriever
+
+
+def milvus_hybrid_retrieve(collection: Collection, bgem3_ef: BGEM3EmbeddingFunction, query: str, k: int = config.TOP_K,
+                           rerank_method: str = config.RERANK_METHOD_RRF) -> list[Hits]:
+    """在Milvus中执行稠密和稀疏向量混合检索，并对结果进行重排。
+    :param collection: Milvus集合对象，用于执行搜索操作。
+    :param bgem3_ef: 用于生成查询文本的稠密和稀疏向量表示。
+    :param query: 用户输入的查询文本。
+    :param k: 返回的最相似结果数量，默认值由配置项 config TOP_K 指定。
+    :param rerank_method: 指定结果重排方法，支持加权合并或RRF（Reciprocal Rank Fusion），
+                                         默认值由配置项 config RERANK_METHOD_RRF 指定。
+    :return: list: 检索并重排后的结果 Hits 对象列表
+    """
+    dense_params = {
+        "metric_type": config.METRIC_TYPE,
+        "params": {"nprobe": config.NPROBE}
+    }
+    sparse_params = {
+        "metric_type": config.SPARSE_METRIC_TYPE,
+        "params": {}
+    }
+
+    query_embeddings = bgem3_ef([query])
+
+    dense_req = AnnSearchRequest(
+        data=[
+            query_embeddings["dense"][0]
+        ],
+        anns_field=config.DENSE_VECTOR_FIELD,
+        param=dense_params,
+        limit=2 * k
+    )
+    sparse_req = AnnSearchRequest(
+        data=[
+            query_embeddings["sparse"]._getrow(0)
+        ],
+        anns_field=config.SPARSE_VECTOR_FIELD,
+        param=sparse_params,
+        limit=3 * k
+    )
+
+    # 仅进行稠密向量检索
+    # dense_results = collection.search(
+    #     data=[query_embeddings["dense"][0]],
+    #     anns_field=config.DENSE_VECTOR_FIELD,
+    #     param=dense_params,
+    #     limit=k,
+    #     output_fields=["id", "text", "metadata"]
+    # )[0]
+    #
+    # return dense_results
+
+    # 单独进行稀疏向量检索
+    # sparse_results = collection.search(
+    #     data=[query_embeddings["sparse"]._getrow(0)],
+    #     anns_field=config.SPARSE_VECTOR_FIELD,
+    #     param=sparse_params,
+    #     limit=k,
+    #     output_fields=["id", "text", "metadata"]
+    # )[0]
+
+    # logger.info("稀疏向量搜索结果：")
+    # for i, hit in enumerate(sparse_results):
+    #     print(f"{i + 1}. {hit.entity.text} (分数: {hit.distance:.4f})")
+    # return sparse_results
+
+    # 根据选择的重排方法创建不同的重排器
+    if rerank_method == config.RERANK_METHOD_WEIGHTED:
+        sparse_weights = config.SPARSE_WEIGHTED
+        dense_weights = config.SPARSE_WEIGHTED
+        rerank = WeightedRanker(dense_weights, sparse_weights)
+    else:  # rrf
+        rrf_k = config.RRF_K
+        rerank = RRFRanker(rrf_k)
+
+    # 执行混合搜索并使用指定的重排器对结果进行重排序
+    results = collection.hybrid_search(
+        reqs=[dense_req, sparse_req],
+        rerank=rerank,
+        limit=k,
+        output_fields=["id", "text", "metadata"],
+    )[0]
+
+    return results

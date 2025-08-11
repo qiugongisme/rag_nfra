@@ -1,14 +1,13 @@
-import os
 from operator import itemgetter
 
 from langchain.callbacks import AsyncIteratorCallbackHandler
 from langchain.chains.base import Chain
 from langchain.output_parsers import BooleanOutputParser
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnableMap, RunnableLambda
+from langchain_core.runnables import RunnableMap
 
 from src.prompt import CHECK_NFRA_PROMPT, QUERY_PROMPT, HYDE_QUERY_PROMPT
-from src.retriever import MilvusRetriever, retrieved_deal, query_rewrite_retriever
+from src.retriever import retrieved_deal, MilvusRetriever
 from src.utils import get_deepseek_model, get_qwen_model
 
 
@@ -31,7 +30,7 @@ def get_qa_chain(out_callback: AsyncIteratorCallbackHandler) -> Chain:
     callbacks = [out_callback] if out_callback else []
 
     # 定义 Hyde 查询扩展链
-    hyde_chain = get_hyde_chain()
+    # hyde_chain = get_hyde_chain()
 
     # 定义 milvus检索器
     milvus_retriever = MilvusRetriever()
@@ -45,14 +44,19 @@ def get_qa_chain(out_callback: AsyncIteratorCallbackHandler) -> Chain:
     # def sync_retrieve(query):
     #     return re_retriever.invoke(query)
 
+    """
+       V1.1.1 update content
+    """
+    # RunnableMap({
+    #     "question_hyde": itemgetter("question") | hyde_chain,
+    #     "question": lambda x: x["question"]  # 获取问题
+    # }) |
+
     chain = (
             RunnableMap({
-                "question_hyde": itemgetter("question") | hyde_chain,
-                "question": lambda x: x["question"]  # 获取问题
-            }) |
-            RunnableMap({
-                "retrieve_docs": itemgetter("question_hyde") | milvus_retriever, # 从问题中检索相关文档
+                # "retrieve_docs": itemgetter("question_hyde") | milvus_retriever, # 从问题中检索相关文档
                 # "retrieve_docs": itemgetter("question") | RunnableLambda(sync_retrieve),
+                "retrieve_docs": itemgetter("question") | milvus_retriever,
                 "question": lambda x: x["question"]  # 获取问题
             }) |
             RunnableMap({

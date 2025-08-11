@@ -11,11 +11,11 @@ import pandas as pd
 import pymilvus
 from dotenv import load_dotenv
 from langchain.embeddings import CacheBackedEmbeddings
+from milvus_model.hybrid import BGEM3EmbeddingFunction
 from pymilvus import MilvusClient
 
 from config import config
-from src.chain import get_hyde_chain
-from src.retriever import MilvusRetriever, query_rewrite_retriever
+from src.retriever import MilvusRetriever, query_rewrite_retriever, milvus_hybrid_retrieve
 from src.utils import get_cached_embedder, MilvusUtils, get_qwen_model
 
 logger = logging.getLogger(__name__)
@@ -66,6 +66,7 @@ def read_and_group_csvs(directory: str, batch_flag: str):
 
     # 按文件名的最后 last_n 个字符分组
     last_n = 18 + len(batch_flag) + 1
+    # last_n = len(batch_flag) + 4
     grouped_files = {}
     for file_name in csv_files:
         key = file_name[-last_n:]
@@ -141,7 +142,7 @@ def extract_txt_str(text) -> str:
 
     # 输入验证
     if text is None:
-        return []
+        return ""
 
     if not isinstance(text, str):
         text = str(text)
@@ -174,14 +175,16 @@ def write_results_to_csv(retrieve_result_list, csv_f):
         writer = csv.writer(f)
         if write_header:
             # writer.writerow(["查询问题", "参考答案", "参考来源", "文本块", "相似度", "元数据"])
-            # writer.writerow(["查询问题", "参考答案", "参考来源", "文本块", "相似度", "元数据", "召回说明"])
-            writer.writerow(
-                ["查询问题", "参考答案", "参考来源", "文本块", "相似度", "元数据", "召回说明", "HyDE后新问题"])
+            writer.writerow(["查询问题", "参考答案", "参考来源", "文本块", "相似度", "元数据", "召回说明"])
+            # writer.writerow(
+            #     ["查询问题", "参考答案", "参考来源", "文本块", "相似度", "元数据", "召回说明", "HyDE后新问题"])
         for item in retrieve_result_list:
             writer.writerow(
                 # [item["query"], item["参考答案"], item["参考来源"], item["text"], item["distance"], item["metadata"]]
                 [item["query"], item["参考答案"], item["参考来源"], item["text"], item["distance"], item["metadata"],
-                 item["召回说明"], item["HyDE后新问题"]]
+                 item["召回说明"]]
+                # [item["query"], item["参考答案"], item["参考来源"], item["text"], item["distance"], item["metadata"],
+                #  item["召回说明"], item["HyDE后新问题"]]
             )
 
 
@@ -224,12 +227,14 @@ def execute_retrieval(embedding: CacheBackedEmbeddings, client: MilvusClient, co
             # logging.info(f"正在检索问题：{key}，请稍候...")
 
             # HyDE 扩展 query
-            hyde_chain = get_hyde_chain()
-            hyde_query = hyde_chain.invoke(input=key)
+            # hyde_chain = get_hyde_chain()
+            # hyde_query = hyde_chain.invoke(input=key)
             # logging.info(f"query: {key}")
             # logging.info(f"HyDE query: {hyde_query}")
 
-            res = retrieve_query(question=hyde_query, embeddings=embedding, client=client, collect_name=collection_name)
+            # res = retrieve_query(question=hyde_query, embeddings=embedding, client=client, collect_name=collection_name)
+
+            res = retrieve_query(question=key, embeddings=embedding, client=client, collect_name=collection_name)
 
             for ddt in res:
                 ref_source = values[0]['来源'] if values else ""
@@ -243,8 +248,8 @@ def execute_retrieval(embedding: CacheBackedEmbeddings, client: MilvusClient, co
                 ddt['召回说明'] = "TRUE" if len(retri_txt_nums) > 0 and ref_source_num in set(
                     retri_txt_nums) else "FALSE"
 
-                ddt['HyDE后新问题'] = hyde_query
-                ddt['query'] = key  # 在调用检索时，query 已被赋值为 HyDE之后的了，因此这里需要在写到CSV文件前覆盖回来
+                # ddt['HyDE后新问题'] = hyde_query
+                # ddt['query'] = key  # 在调用检索时，query 已被赋值为 HyDE之后的了，因此这里需要在写到CSV文件前覆盖回来
 
             results.append(res)
             logging.info(f"问题 '{key}' 的检索完成")
@@ -413,6 +418,67 @@ def execute_retrieval_batch(batch_num: int, eval_strategy_name: str):
     read_directory_csv_and_count(output_batch_path, eval_strategy_name)
 
 
+def hybrid_retrieve_evaluation(output_fname_ctrl: str = None):
+    logging.info("hybrid_retrieve_evaluation start...")
+
+    milvus_util = MilvusUtils()
+    collection_var = milvus_util.get_collection(config.COLLECTION_NAME)
+
+    bgem3_ef = BGEM3EmbeddingFunction(use_fp16=config.BGEM3_USE_FP16, device=config.BGEM3_DEVICE)
+
+    input_data_path = "../evaluation/data/retrieveInputData_V1_2.xlsx"
+    sheet_list = [0, 1, 2]  # 需要读取的表单
+    # sheet_list = [1]  # 需要读取的表单
+
+    # 读取 Excel 文件并处理数据
+    dt_list = read_xlsx_and_process(input_data_path, sheet_list)
+
+    # 输出的名称分别与上述读取的表单对应
+    output_csv_path_list = [
+        "./eval_out/batch/retrieve_output_WX.csv",
+        "./eval_out/batch/retrieve_output_TY.csv",
+        "./eval_out/batch/retrieve_output_YB.csv",
+    ]
+
+    for i, dt in enumerate(dt_list):
+        results = []
+        logging.info("开始检索问题列表...")
+        for key, values in dt.items():
+
+            res_list = milvus_hybrid_retrieve(collection=collection_var, bgem3_ef=bgem3_ef, query=key)
+
+            for hit in res_list:
+                ref_source = values[0]['来源'] if values else ""
+                retrieve_txt = re.sub(r'[\r\n]+', '', hit.entity.get('text'))
+
+                ref_source_num = extract_txt_str(ref_source)
+                retrieve_txt_nums = extract_txt_list(retrieve_txt)
+                results.append({
+                    "query": key,
+                    "参考答案": values[0]['答案'] if values else "",
+                    "参考来源": ref_source,
+                    "text": retrieve_txt,
+                    "distance": "%.4f" % hit.distance if hit.distance else "0.0000",
+                    "metadata": hit.entity.get('metadata')['source'] if 'source' in hit.entity.get('metadata') else "",
+                    "召回说明": "TRUE" if len(retrieve_txt_nums) > 0 and ref_source_num in set(
+                        retrieve_txt_nums) else "FALSE"
+                })
+
+            logging.info(f"问题 '{key}' 的检索完成")
+
+        logging.info(f"表单 {i + 1} 的检索完成，写入结果到 CSV 文件...")
+        # 展开嵌套列表
+        # flat_results = [item for sublist in results for item in sublist]
+
+        output_f_name = output_csv_path_list[i]
+        if output_fname_ctrl:
+            output_f_name = output_f_name.replace(".csv", output_fname_ctrl + ".csv")
+
+        write_results_to_csv(results, output_f_name)
+
+        logging.info(f"表单 {i + 1} 的结果已写入到 {output_f_name}")
+
+
 """
     这个文件是用于评估 RAG 检索效果的。
 """
@@ -428,4 +494,10 @@ if __name__ == '__main__':
     # execute_rewrite_retrieval()
 
     # 根据实际情况赋值 eval_strategy_name
-    execute_retrieval_batch(10, "HyDETop3_20")
+    # execute_retrieval_batch(10, "")
+
+    hybrid_retrieve_evaluation("987654321_hybridTop3_")
+
+    # 统计结果 （要注意目录下的文件是否都是本批次统计的，使用：batch_flag，控制）
+    out_batch_path = "./eval_out/batch"
+    read_directory_csv_and_count(out_batch_path, "987654321_hybridTop3_")

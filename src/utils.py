@@ -1,5 +1,6 @@
 import re
 import threading
+import time
 from typing import Dict, Optional
 
 import markdown
@@ -10,7 +11,7 @@ from langchain_community.chat_models import ChatTongyi
 from langchain_core.callbacks import Callbacks
 from langchain_deepseek import ChatDeepSeek
 from langchain_huggingface import HuggingFaceEmbeddings
-from pymilvus import connections, Collection, CollectionSchema, utility
+from pymilvus import Collection, CollectionSchema, utility, connections
 
 from config import config
 
@@ -87,29 +88,45 @@ class MilvusUtils:
         :param port:
         """
         # 连接到 Milvus 服务
-        self.collection = connections.connect(host=host, port=port)
+        self.conection = connections.connect(host=host, port=port)
 
-    def create_collection(self, collection_name: str, schema: CollectionSchema) -> Collection:
+    def create_collection(self, collection_name: str, schema: CollectionSchema, consistency_level: str = None) -> Collection:
         """
         创建集合
         :param collection_name: 集合名称
+        :param consistency_level: 事务一致性级别
         :param schema: 集合的 schema
         :return: Collection 对象
         """
         if utility.has_collection(collection_name):
             raise ValueError(f"Collection {collection_name} already exists.")
             # utility.drop_collection(collection_name)  # 测试阶段，暂时是删除 todo
-        collection = Collection(name=collection_name, schema=schema)
+        collection = Collection.create_collection(name=collection_name, schema=schema,
+                                                  consistency_level=consistency_level)
         return collection
 
     def get_collection(self, collection_name: str) -> Collection:
         """
-        获取已存在的集合
+        获取已存在内存的集合，若不存在，则先加载到内存
         :param collection_name: 集合名称
         :return: Collection 对象
         """
         if not utility.has_collection(collection_name):
             raise ValueError(f"Collection {collection_name} does not exist.")
+
+        if not self.is_collection_loaded(collection_name):
+            collection = Collection(collection_name)
+            collection.load()
+
+        # 等待集合加载完成
+        while True:
+            try:
+                if self.is_collection_loaded(collection_name):
+                    break
+            except Exception as e:
+                print(f"检查集合加载状态时出错: {e}")
+            print("等待集合加载完成...")
+            time.sleep(5)
         return Collection(name=collection_name)
 
     def is_collection_loaded(self, collection_name: str) -> bool:
@@ -118,7 +135,7 @@ class MilvusUtils:
         :return: bool，表示集合是否已加载，True 表示已加载，False 表示未加载或发生错误
         """
         try:
-            return utility.load_state(collection_name=collection_name) == "Loaded"
+            return utility.load_state(collection_name=collection_name) == 3
         except Exception as e:
             print(f"Error checking collection load state: {e}")
             return False
@@ -150,7 +167,8 @@ def get_qwen_model(
     - streaming: 是否启用流式输出，默认为 True
     - callbacks: 回调函数列表，默认为 None
     """
-    model = ChatTongyi(model=model, api_key=api_key, streaming=streaming, model_kwargs=model_kwargs, callbacks=callbacks)
+    model = ChatTongyi(model=model, api_key=api_key, streaming=streaming, model_kwargs=model_kwargs,
+                       callbacks=callbacks)
 
     return model
 
