@@ -35,7 +35,7 @@
     ```bash
     pip install -r requirements.txt
     ```
-4. 配置环境变量，在`.env` 文件中填写你的 DeepSeek API Key
+4. 配置环境变量，在项目 rag_nfra 下创建一个`.env` 文件，并填写你的 DeepSeek API Key
 5. 安装 Milvus，[在github上](https://github.com/milvus-io/milvus/releases/tag/v2.5.4)，下载并安装 Milvus 2.5.4 版本
 6. 安装 Docker 并启动，可参考：[博客](https://blog.csdn.net/QQ1817117243/article/details/139879440?ops_request_misc=%257B%2522request%255Fid%2522%253A%252239eda5b68df6b07564b68f3511c0444a%2522%252C%2522scm%2522%253A%252220140713.130102334..%2522%257D&request_id=39eda5b68df6b07564b68f3511c0444a&biz_id=0&utm_medium=distribute.pc_search_result.none-task-blog-2~all~top_positive~default-1-139879440-null-null.142^v102^pc_search_result_base5&utm_term=docker%20windows%E5%AE%89%E8%A3%85&spm=1018.2226.3001.4187)
 7. 启动环境：
